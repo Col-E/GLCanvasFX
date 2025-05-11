@@ -21,3 +21,7 @@ This implementation of `GLCanvas` for JavaFX mitigates _all_ of those problems.
 ## Example
 
 See: [Example `Main`](src/test/java/software/coley/glcanvasfx/Main.java)
+
+Video: https://www.youtube.com/watch?v=zf7g-EPNqdU
+
+![The immortal rainbow triangle of OpenGL hello world](src/main/resources/the_hello_world_triangle.png)
