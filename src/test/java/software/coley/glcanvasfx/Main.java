@@ -31,6 +31,7 @@ import javafx.scene.layout.Background;
 import javafx.scene.layout.BackgroundFill;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.paint.Color;
 import javafx.stage.Stage;
@@ -39,13 +40,16 @@ import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 
 /**
- * Basic OpenGL rotating triangle application in a JavaFX context via {@link GLCanvas}.
+ * Basic OpenGL test in a JavaFX context via {@link GLCanvas}/{@link GLBentoCanvas}.
+ * <br>
+ * Configure the fields below to tweak how the test is run and which example is displayed.
  *
  * @author Matt Coley
  */
 public class Main {
 	private static final int FPS = 144;
 	private static final Showcase showcase = Showcase.SHADER;
+	private static final CanvasImpl impl = CanvasImpl.BENTO_CANVAS;
 	private static final GLCapabilities capabilities = createDefaultCapabilities();
 	private static final GLDrawableFactory factory = GLDrawableFactory.getFactory(capabilities.getGLProfile());
 
@@ -74,7 +78,7 @@ public class Main {
 	public static class App extends Application {
 		@Override
 		public void start(Stage stage) {
-			GLCanvas canvas = newCanvas();
+			Region canvas = newCanvas();
 
 			// Create some buttons to apply effects to the canvas
 			Button none = new Button("None");
@@ -142,7 +146,7 @@ public class Main {
 		 * @return New canvas instance with its own rotating triangle.
 		 */
 		@Nonnull
-		public static GLCanvas newCanvas() {
+		public static Region newCanvas() {
 			GLOffscreenAutoDrawable drawable = factory.createOffscreenAutoDrawable(factory.getDefaultDevice(), capabilities, null, 800, 600);
 
 			switch (showcase) {
@@ -158,7 +162,7 @@ public class Main {
 			animator.start();
 
 			// Create the canvas and inform the wrapped drawable of any size changes
-			GLCanvas canvas = new GLCanvas(drawable);
+			Region canvas = impl == CanvasImpl.FX_CANVAS ? new GLCanvas(drawable) : new GLBentoCanvas(drawable);
 			canvas.widthProperty().addListener((_, _, _) -> drawable.setSurfaceSize(Math.max(1, (int) canvas.getWidth()), Math.max(1, (int) canvas.getHeight())));
 			canvas.heightProperty().addListener((_, _, _) -> drawable.setSurfaceSize(Math.max(1, (int) canvas.getWidth()), Math.max(1, (int) canvas.getHeight())));
 
@@ -368,5 +372,9 @@ public class Main {
 
 	private enum Showcase {
 		SPINNING_TRIANGLE, SHADER
+	}
+
+	private enum CanvasImpl {
+		FX_CANVAS, BENTO_CANVAS
 	}
 }

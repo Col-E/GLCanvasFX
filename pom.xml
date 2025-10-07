@@ -41,6 +41,12 @@
             <version>19.0.2.1</version>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <groupId>software.coley</groupId>
+            <artifactId>bento-fx</artifactId>
+            <version>0.10.1</version>
+            <scope>provided</scope>
+        </dependency>
 
         <dependency>
             <groupId>jakarta.annotation</groupId>
