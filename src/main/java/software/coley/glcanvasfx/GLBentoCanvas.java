@@ -193,7 +193,7 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 	private void refitBuffers(int width, int height) {
 		imageWidth = Math.max(1, width);
 		imageHeight = Math.max(1, height);
-		buffer.limit(imageWidth * imageHeight + 1);
+		buffer.limit(Math.max(buffer.limit(), imageWidth * imageHeight + 1));
 		argbSource = new GLArgbSource(buffer, imageWidth, imageHeight);
 	}
 

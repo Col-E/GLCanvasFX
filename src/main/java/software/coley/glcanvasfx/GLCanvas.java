@@ -198,7 +198,7 @@ public class GLCanvas extends BorderPane implements GLEventListener {
 	private void refitBuffers(int width, int height) {
 		imageWidth = Math.max(1, width);
 		imageHeight = Math.max(1, height);
-		buffer.limit((imageWidth * imageHeight * COLOR_BYTES) + COLOR_BYTES);
+		buffer.limit(Math.max(buffer.limit(), (imageWidth * imageHeight * COLOR_BYTES) + COLOR_BYTES));
 		image = new WritableImage(imageWidth, imageHeight);
 	}
 
