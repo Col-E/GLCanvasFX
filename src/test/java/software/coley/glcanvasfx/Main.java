@@ -8,7 +8,6 @@ import com.jogamp.opengl.GLDrawableFactory;
 import com.jogamp.opengl.GLEventListener;
 import com.jogamp.opengl.GLOffscreenAutoDrawable;
 import com.jogamp.opengl.GLProfile;
-import com.jogamp.opengl.glu.GLU;
 import com.jogamp.opengl.util.AnimatorBase;
 import com.jogamp.opengl.util.FPSAnimator;
 import jakarta.annotation.Nonnull;
@@ -21,37 +20,48 @@ import javafx.geometry.Pos;
 import javafx.scene.Group;
 import javafx.scene.Scene;
 import javafx.scene.control.Button;
+import javafx.scene.control.Label;
 import javafx.scene.effect.ColorAdjust;
 import javafx.scene.effect.DisplacementMap;
 import javafx.scene.effect.FloatMap;
 import javafx.scene.effect.GaussianBlur;
 import javafx.scene.effect.Glow;
 import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
+import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.Background;
 import javafx.scene.layout.BackgroundFill;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
+import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.stage.Stage;
+import software.coley.bentofx.Bento;
+import software.coley.bentofx.building.DockBuilding;
+import software.coley.bentofx.dockable.Dockable;
+import software.coley.bentofx.layout.container.DockContainerBranch;
+import software.coley.bentofx.layout.container.DockContainerLeaf;
 
-import java.nio.ByteBuffer;
-import java.nio.IntBuffer;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+import java.util.function.Supplier;
 
 /**
  * Basic OpenGL test in a JavaFX context via {@link GLCanvas}/{@link GLBentoCanvas}.
  * <br>
- * Configure the fields below to tweak how the test is run and which example is displayed.
+ * Configure the fields below to tweak how the test is run.
  *
  * @author Matt Coley
  */
 public class Main {
 	private static final int FPS = 144;
-	private static final Showcase showcase = Showcase.SHADER;
 	private static final CanvasImpl impl = CanvasImpl.BENTO_CANVAS;
 	private static final GLCapabilities capabilities = createDefaultCapabilities();
 	private static final GLDrawableFactory factory = GLDrawableFactory.getFactory(capabilities.getGLProfile());
+	private static final List<GLAutoDrawable> drawables = new ArrayList<>();
 
 	/**
 	 * @param args
@@ -76,9 +86,57 @@ public class Main {
 	 * FX application to display a {@link GLCanvas}.
 	 */
 	public static class App extends Application {
+		private static final Image icon = new Image("/the_hello_world_triangle.png");
+
 		@Override
 		public void start(Stage stage) {
-			Region canvas = newCanvas();
+			Bento bento = new Bento();
+			bento.placeholderBuilding().setContainerPlaceholderFactory(_ -> {
+				// Something to show since we want to keep at the primary space open
+				// even after dragging things away.
+				BorderPane placeholder = new BorderPane();
+				VBox vbox = new VBox(new ImageView(icon), new Label("Empty space"));
+				vbox.setFillWidth(true);
+				vbox.setAlignment(Pos.CENTER);
+				placeholder.setCenter(vbox);
+				placeholder.setBackground(new Background(new BackgroundFill(Color.BLACK, null, null)));
+				return placeholder;
+			});
+
+			DockBuilding builder = bento.dockBuilding();
+			DockContainerBranch branchRoot = builder.root("root");
+			DockContainerLeaf leafLeft = builder.leaf("leaf-raw");
+			DockContainerLeaf leafRight = builder.leaf("leaf-shaders");
+			branchRoot.addContainers(leafLeft, leafRight);
+			leafLeft.setPruneWhenEmpty(false);
+			leafLeft.addDockables(
+					buildDockable(builder, "Spinning Triangle", SpinningTriangleDemo::new)
+			);
+			leafRight.addDockables(
+					buildDockable(builder, "Shader: Mandlebrot", MandelbrotShaderDemo::new),
+					buildDockable(builder, "Shader: Mouse", MouseShaderDemo::new)
+			);
+
+			// Show the scene
+			Scene scene = new Scene(branchRoot, 800, 400);
+			scene.getStylesheets().add("/bento.css");
+			stage.getIcons().add(icon);
+			stage.setTitle("JOGL + JavaFX");
+			stage.setOnHiding(_ -> {
+				// Destroy before exiting to prevent system:err spam
+				for (GLAutoDrawable drawable : drawables)
+					drawable.destroy();
+				System.exit(0);
+			});
+			stage.setScene(scene);
+			stage.setMinWidth(600);
+			stage.setMinHeight(300);
+			stage.show();
+		}
+
+		@Nonnull
+		private Dockable buildDockable(@Nonnull DockBuilding builder, @Nonnull String title, @Nonnull Supplier<GLEventListener> glListener) {
+			Region canvas = newCanvas(glListener);
 
 			// Create some buttons to apply effects to the canvas
 			Button none = new Button("None");
@@ -129,40 +187,36 @@ public class Main {
 			StackPane.setAlignment(effectsWrapper, Pos.BOTTOM_RIGHT);
 			StackPane.setMargin(effectsWrapper, new Insets(10));
 
-			// App layout
+			// Create dockable
 			BorderPane root = new BorderPane(stack);
 			root.setBackground(new Background(new BackgroundFill(Color.BLACK, null, null)));
-
-			// Show the scene
-			Scene scene = new Scene(root, 800, 600);
-			stage.getIcons().add(new Image("/the_hello_world_triangle.png"));
-			stage.setTitle("JOGL + JavaFX");
-			stage.setOnHiding(_ -> System.exit(0));
-			stage.setScene(scene);
-			stage.show();
+			Dockable dockable = builder.dockable("leaf-" + UUID.randomUUID());
+			dockable.setTitle(title);
+			dockable.setNode(root);
+			dockable.setClosable(false);
+			return dockable;
 		}
 
 		/**
 		 * @return New canvas instance with its own rotating triangle.
 		 */
 		@Nonnull
-		public static Region newCanvas() {
+		public static Region newCanvas(@Nonnull Supplier<GLEventListener> glListener) {
 			GLOffscreenAutoDrawable drawable = factory.createOffscreenAutoDrawable(factory.getDefaultDevice(), capabilities, null, 800, 600);
-
-			switch (showcase) {
-				case SPINNING_TRIANGLE -> drawable.addGLEventListener(new SpinningTriangleDemo());
-				case SHADER -> drawable.addGLEventListener(new ShaderDemo());
-			}
-
+			drawables.add(drawable);
+			GLEventListener listener = glListener.get();
+			drawable.addGLEventListener(listener);
 
 			// Begin JOGL animation loop
 			AnimatorBase animator = new FPSAnimator(FPS);
 			animator.add(drawable);
-			animator.setUpdateFPSFrames(FPS, System.out);
+			animator.setUpdateFPSFrames(FPS, null);
 			animator.start();
 
 			// Create the canvas and inform the wrapped drawable of any size changes
 			Region canvas = impl == CanvasImpl.FX_CANVAS ? new GLCanvas(drawable) : new GLBentoCanvas(drawable);
+			if (listener instanceof ShaderBase shader)
+				canvas.addEventFilter(MouseEvent.MOUSE_MOVED, e -> shader.setMouseXY(e.getX(), e.getY()));
 			canvas.widthProperty().addListener((_, _, _) -> drawable.setSurfaceSize(Math.max(1, (int) canvas.getWidth()), Math.max(1, (int) canvas.getHeight())));
 			canvas.heightProperty().addListener((_, _, _) -> drawable.setSurfaceSize(Math.max(1, (int) canvas.getWidth()), Math.max(1, (int) canvas.getHeight())));
 
@@ -173,8 +227,7 @@ public class Main {
 	/**
 	 * Example shader use from: <a href="https://jvm-gaming.org/t/glsl-example-s-in-jogl/34884/2">Morten Nobel @ jvm-gaming.org</a>
 	 */
-	private static class ShaderDemo implements GLEventListener {
-		private static final GLU glu = new GLU();
+	private static class MandelbrotShaderDemo extends ShaderBase {
 		// config
 		private static final float x = -2.5f;
 		private static final float y = -2;
@@ -186,132 +239,60 @@ public class Main {
 
 		@Override
 		public void init(GLAutoDrawable drawable) {
-			GL2 gl = drawable.getGL().getGL2();
-
-			int vertexShaderProgram = gl.glCreateShader(GL2.GL_VERTEX_SHADER);
-			int fragmentShaderProgram = gl.glCreateShader(GL2.GL_FRAGMENT_SHADER);
-
-			String[] vsrc = new String[]{"""
-				uniform float mandel_x;
-				uniform float mandel_y;
-				uniform float mandel_width;
-				uniform float mandel_height;
-				uniform float mandel_iterations;
-				
-				void main()
-				{
-					gl_TexCoord[0] = gl_MultiTexCoord0;
-					gl_Position = ftransform();
-				}"""
-			};
-			gl.glShaderSource(vertexShaderProgram, 1, vsrc, null, 0);
-			gl.glCompileShader(vertexShaderProgram);
-
-			String[] fsrc = new String[]{"""
-				uniform float mandel_x;
-				uniform float mandel_y;
-				uniform float mandel_width;
-				uniform float mandel_height;
-				uniform float mandel_iterations;
-				
-				float calculateMandelbrotIterations(float x, float y) {
-					float xx = 0.0;
-				    float yy = 0.0;
-				    float iter = 0.0;
-				    while (xx * xx + yy * yy <= 4.0 && iter<mandel_iterations) {
-				        float temp = xx*xx - yy*yy + x;
-				        yy = 2.0*xx*yy + y;
-				
-				        xx = temp;
-				
-				        iter ++;
-				    }
-				    return iter;
-				}
-				
-				vec4 getColor(float iterations) {
-					float oneThirdMandelIterations = mandel_iterations/3.0;
-					float green = iterations/oneThirdMandelIterations;
-					float blue = (iterations-1.3*oneThirdMandelIterations)/oneThirdMandelIterations;
-					float red = (iterations-2.2*oneThirdMandelIterations)/oneThirdMandelIterations;
-					return vec4(red,green,blue,1.0);
-				}
-				
-				void main()
-				{
-					float x = mandel_x+gl_TexCoord[0].x*mandel_width;
-					float y = mandel_y+gl_TexCoord[0].y*mandel_height;
-					float iterations = calculateMandelbrotIterations(x,y);
-					gl_FragColor = getColor(iterations);
-				}"""
-			};
-			gl.glShaderSource(fragmentShaderProgram, 1, fsrc, null, 0);
-			gl.glCompileShader(fragmentShaderProgram);
-
-			shaderProgram = gl.glCreateProgram();
-			gl.glAttachShader(shaderProgram, vertexShaderProgram);
-			gl.glAttachShader(shaderProgram, fragmentShaderProgram);
-			gl.glLinkProgram(shaderProgram);
-			gl.glValidateProgram(shaderProgram);
-			IntBuffer intBuffer = IntBuffer.allocate(1);
-			gl.glGetProgramiv(shaderProgram, GL2.GL_LINK_STATUS, intBuffer);
-			if (intBuffer.get(0) != 1) {
-				gl.glGetProgramiv(shaderProgram, GL2.GL_INFO_LOG_LENGTH, intBuffer);
-				int size = intBuffer.get(0);
-				System.err.println("Program link error: ");
-				if (size > 0) {
-					ByteBuffer byteBuffer = ByteBuffer.allocate(size);
-					gl.glGetProgramInfoLog(shaderProgram, size, intBuffer, byteBuffer);
-					for (byte b : byteBuffer.array()) {
-						System.err.print((char) b);
+			String vert = """
+					uniform float mandel_x;
+					uniform float mandel_y;
+					uniform float mandel_width;
+					uniform float mandel_height;
+					uniform float mandel_iterations;
+									
+					void main()
+					{
+						gl_TexCoord[0] = gl_MultiTexCoord0;
+						gl_Position = ftransform();
+					}""";
+			String frag = """
+					uniform float mandel_x;
+					uniform float mandel_y;
+					uniform float mandel_width;
+					uniform float mandel_height;
+					uniform float mandel_iterations;
+									
+					float calculateMandelbrotIterations(float x, float y) {
+						float xx = 0.0;
+					    float yy = 0.0;
+					    float iter = 0.0;
+					    while (xx * xx + yy * yy <= 4.0 && iter<mandel_iterations) {
+					        float temp = xx*xx - yy*yy + x;
+					        yy = 2.0*xx*yy + y;
+									
+					        xx = temp;
+									
+					        iter ++;
+					    }
+					    return iter;
 					}
-				} else {
-					System.out.println("Unknown");
-				}
-				System.exit(1);
-			}
-			gl.glUseProgram(shaderProgram);
+									
+					vec4 getColor(float iterations) {
+						float oneThirdMandelIterations = mandel_iterations/3.0;
+						float green = iterations/oneThirdMandelIterations;
+						float blue = (iterations-1.3*oneThirdMandelIterations)/oneThirdMandelIterations;
+						float red = (iterations-2.2*oneThirdMandelIterations)/oneThirdMandelIterations;
+						return vec4(red,green,blue,1.0);
+					}
+									
+					void main()
+					{
+						float x = mandel_x+gl_TexCoord[0].x*mandel_width;
+						float y = mandel_y+gl_TexCoord[0].y*mandel_height;
+						float iterations = calculateMandelbrotIterations(x,y);
+						gl_FragColor = getColor(iterations);
+					}""";
+			shaderProgram = compile(drawable, vert, frag);
 		}
 
 		@Override
-		public void dispose(GLAutoDrawable drawable) {
-			// no-op
-		}
-
-		@Override
-		public void display(GLAutoDrawable drawable) {
-			GL2 gl = drawable.getGL().getGL2();
-			updateUniformVars(gl);
-			gl.glLoadIdentity();
-			gl.glBegin(GL2.GL_QUADS);
-			{
-				gl.glTexCoord2f(0.0f, 1.0f);
-				gl.glVertex3f(0.0f, 1.0f, 1.0f);
-				gl.glTexCoord2f(1.0f, 1.0f);
-				gl.glVertex3f(1.0f, 1.0f, 1.0f);
-				gl.glTexCoord2f(1.0f, 0.0f);
-				gl.glVertex3f(1.0f, 0.0f, 1.0f);
-				gl.glTexCoord2f(0.0f, 0.0f);
-				gl.glVertex3f(0.0f, 0.0f, 1.0f);
-			}
-			gl.glEnd();
-			gl.glFlush();
-		}
-
-		@Override
-		public void reshape(GLAutoDrawable drawable, int x, int y, int width, int height) {
-			GL2 gl = drawable.getGL().getGL2();
-			if (height <= 0)
-				height = 1;
-			gl.glViewport(0, 0, width, height);
-			gl.glMatrixMode(GL2.GL_PROJECTION);
-			gl.glLoadIdentity();
-			glu.gluOrtho2D(0, 1, 0, 1);
-			gl.glMatrixMode(GL2.GL_MODELVIEW);
-			gl.glLoadIdentity();
-		}
-
-		private void updateUniformVars(GL2 gl) {
+		protected void updateUniformVars(@Nonnull GL2 gl) {
 			int mandel_x = gl.glGetUniformLocation(shaderProgram, "mandel_x");
 			int mandel_y = gl.glGetUniformLocation(shaderProgram, "mandel_y");
 			int mandel_width = gl.glGetUniformLocation(shaderProgram, "mandel_width");
@@ -328,6 +309,57 @@ public class Main {
 			gl.glUniform1f(mandel_width, width);
 			gl.glUniform1f(mandel_height, height);
 			gl.glUniform1f(mandel_iterations, iterations);
+		}
+	}
+
+	private static class MouseShaderDemo extends ShaderBase {
+		private int shaderProgram;
+
+		@Override
+		public void init(GLAutoDrawable drawable) {
+			String vert = """
+					uniform float time;
+					uniform vec2 mouse;
+					uniform vec2 resolution;
+
+					void main()
+					{
+						gl_TexCoord[0] = gl_MultiTexCoord0;
+						gl_Position = ftransform();
+					}""";
+			String frag = """
+					uniform float time;
+					uniform vec2 mouse;
+					uniform vec2 resolution;
+									
+					void main()
+					{
+						vec2 st = gl_FragCoord.xy/resolution.xy;
+					    
+						vec2 dist = mouse/resolution - st.xy;
+						dist.x *= resolution.x/resolution.y;
+					       
+						float mouse_pct = length(dist);
+						mouse_pct = step(0.1, mouse_pct);
+						
+						vec3 m_color = vec3(mouse_pct, 1 - mouse_pct, mouse_pct);
+						gl_FragColor = vec4(m_color, 1.0);
+					}""";
+			shaderProgram = compile(drawable, vert, frag);
+		}
+
+		@Override
+		protected void updateUniformVars(@Nonnull GL2 gl) {
+			int time = gl.glGetUniformLocation(shaderProgram, "time");
+			int mouse = gl.glGetUniformLocation(shaderProgram, "mouse");
+			int resolution = gl.glGetUniformLocation(shaderProgram, "resolution");
+			assert (time != -1);
+			assert (mouse != -1);
+			assert (resolution != -1);
+
+			gl.glUniform1f(time, System.currentTimeMillis() / 1000.0F);
+			gl.glUniform2f(mouse, mx, my);
+			gl.glUniform2f(resolution, rx, ry);
 		}
 	}
 
@@ -368,10 +400,6 @@ public class Main {
 		public void reshape(GLAutoDrawable drawable, int x, int y, int width, int height) {
 			// no-op
 		}
-	}
-
-	private enum Showcase {
-		SPINNING_TRIANGLE, SHADER
 	}
 
 	private enum CanvasImpl {
