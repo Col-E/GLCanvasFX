@@ -46,6 +46,8 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 
 	/** Canvas to draw to. */
 	private final AbsoluteSizedCanvas canvas = new AbsoluteSizedCanvas();
+	/** Timer to animate canvas draws on. */
+	private final AnimationTimer canvasAnimation;
 	/** Intermediate buffer to communicate between our {@link #argbSource ARGB lookup} and the {@link GLAutoDrawable#getGL() GL} frame buffer. */
 	private final IntBuffer buffer;
 	/** The wrapper around our {@link #buffer} for image-like ARGB lookups. Holds a snapshot of the {@link GLAutoDrawable#getGL() GL} frame buffer. */
@@ -99,21 +101,23 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 		//  - The canvas is present in some scene graph
 		//  - The canvas is visible
 		//  - The canvas is enabled
-		AnimationTimer animation = new AnimationTimer() {
+		canvasAnimation = new AnimationTimer() {
 			@Override
 			public void handle(long now) {
 				displayCanvas();
 			}
 		};
-		sceneProperty().isNotNull()
-				.and(visibleProperty())
-				.and(disabledProperty().not())
-				.addListener((_, _, doRender) -> {
-					if (doRender)
-						animation.start();
-					else
-						animation.stop();
-				});
+		sceneProperty().addListener((_, _, _) -> refreshAnimationState());
+		visibleProperty().addListener((_, _, _) -> refreshAnimationState());
+		disabledProperty().addListener((_, _, _) -> refreshAnimationState());
+	}
+
+	private void refreshAnimationState() {
+		if (getScene() != null && isVisible() && !isDisabled()) {
+			canvasAnimation.start();
+		} else {
+			canvasAnimation.stop();
+		}
 	}
 
 	@Override

@@ -47,6 +47,8 @@ public class GLCanvas extends BorderPane implements GLEventListener {
 	private static final int COLOR_BYTES = 4;
 	/** Canvas to draw to. */
 	private final Canvas canvas = new Canvas();
+	/** Timer to animate canvas draws on. */
+	private final AnimationTimer canvasAnimation;
 	/** Canvas drawing context. */
 	private final GraphicsContext gc = canvas.getGraphicsContext2D();
 	/** Intermediate buffer to communicate between our {@link #image WritableImage} and the {@link GLAutoDrawable#getGL() GL} frame buffer. */
@@ -102,21 +104,23 @@ public class GLCanvas extends BorderPane implements GLEventListener {
 		//  - The canvas is present in some scene graph
 		//  - The canvas is visible
 		//  - The canvas is enabled
-		AnimationTimer animation = new AnimationTimer() {
+		canvasAnimation = new AnimationTimer() {
 			@Override
 			public void handle(long now) {
 				displayCanvas();
 			}
 		};
-		sceneProperty().isNotNull()
-				.and(visibleProperty())
-				.and(disabledProperty().not())
-				.addListener((_, _, doRender) -> {
-					if (doRender)
-						animation.start();
-					else
-						animation.stop();
-				});
+		sceneProperty().addListener((_, _, _) -> refreshAnimationState());
+		visibleProperty().addListener((_, _, _) -> refreshAnimationState());
+		disabledProperty().addListener((_, _, _) -> refreshAnimationState());
+	}
+
+	private void refreshAnimationState() {
+		if (getScene() != null && isVisible() && !isDisabled()) {
+			canvasAnimation.start();
+		} else {
+			canvasAnimation.stop();
+		}
 	}
 
 	@Override
