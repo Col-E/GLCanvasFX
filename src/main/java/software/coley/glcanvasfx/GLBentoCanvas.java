@@ -269,7 +269,7 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 
 		@Override
 		public int getArgb(int x, int y) {
-			int i = ((height - y) * width + x);
+			int i = ((height - 1 - y) * width + x);
 			if (i >= 0 && i < bufferCapacity) {
 				return buffer.get(i);
 			}
@@ -279,18 +279,20 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 		@Nullable
 		@Override
 		public int[] getArgb(int x, int y, int width, int height) {
+			int yStart = Math.max(0, y);
+			int xStart = Math.max(0, x);
 			int yBound = Math.min(y + height, getHeight());
 			int xBound = Math.min(x + width, getWidth());
 			IntBuffer buffer = this.buffer;
 			int bufferCapacity = this.bufferCapacity;
 			int outCapacity = width * height;
 			int[] out = new int[outCapacity];
-			for (int ly = y; ly < yBound; ++ly) {
-				int yBufferOffset = ly * getWidth();
-				int yOutOffset = (yBound - ly) * getWidth();
+			for (int ly = yStart; ly < yBound; ++ly) {
+				int yBufferOffset = (getHeight() - 1 - ly) * getWidth();
+				int yOutOffset = (ly - y) * width;
 
-				for (int lx = x; lx < xBound; ++lx) {
-					int outIndex = (yOutOffset + lx);
+				for (int lx = xStart; lx < xBound; ++lx) {
+					int outIndex = (yOutOffset + (lx - x));
 					int bufferIndex = (yBufferOffset + lx);
 					if (bufferIndex < bufferCapacity && outIndex < outCapacity) {
 						int rgb = buffer.get(bufferIndex);
