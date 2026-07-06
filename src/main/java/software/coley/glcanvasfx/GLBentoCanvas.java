@@ -45,18 +45,24 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 		MAX_HEIGHT = heigth;
 	}
 
+	/** Lock guarding frame buffer hand-off between JOGL and JavaFX threads. */
+	private final Object imageBufferLock = new Object();
 	/** Painter used by {@link #canvas} to commit the GL frame buffer directly to {@link PixelWriter}. */
 	private final GLPixelPainter pixelPainter = new GLPixelPainter();
 	/** Canvas to draw to. */
 	private final AbsoluteSizedCanvas canvas = new AbsoluteSizedCanvas(pixelPainter);
 	/** Timer to animate canvas draws on. */
 	private final AnimationTimer canvasAnimation;
-	/** Intermediate buffer to communicate between the {@link GLAutoDrawable#getGL() GL} frame buffer and {@link PixelWriter}. */
-	private final ByteBuffer buffer;
-	/** Width of the last image read into {@link #buffer}. */
-	private int bufferImageWidth;
-	/** Height of the last image read into {@link #buffer}. */
-	private int bufferImageHeight;
+	/** Intermediate buffers to communicate between the {@link GLAutoDrawable#getGL() GL} frame buffer and {@link PixelWriter}. */
+	private final ByteBuffer[] buffers;
+	/** Buffer currently owned by the JOGL thread for the next GL read. Guarded by {@link #imageBufferLock}. */
+	private ByteBuffer writeBuffer;
+	/** Buffer holding a frame ready for the JavaFX thread. Guarded by {@link #imageBufferLock}. */
+	private ByteBuffer pendingBuffer;
+	/** Width of the pending image in {@link #pendingBuffer}. Guarded by {@link #imageBufferLock}. */
+	private int pendingImageWidth;
+	/** Height of the pending image in {@link #pendingBuffer}. Guarded by {@link #imageBufferLock}. */
+	private int pendingImageHeight;
 	/** Current width of the GL display. */
 	private int imageWidth;
 	/** Current height of the GL display. */
@@ -65,10 +71,10 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 	private long imageFrameId;
 	/** Last millis timestamp of a resize event observed. Used to prevent visual tearing when updating the {@link #canvas} display. */
 	private long lastResizeTimeMs;
-	/** Flag indicating if {@link #display(GLAutoDrawable)} needs to update {@link #buffer}. Updated every FX render tick. */
-	boolean fxAwaitingNewImage = true;
-	/** Flag indicating if {@link #displayCanvas()} has new contents in {@link #buffer} to draw to the {@link #canvas}. */
-	boolean imageBufferUpdated;
+	/** Flag indicating if {@link #display(GLAutoDrawable)} can update {@link #writeBuffer}. Guarded by {@link #imageBufferLock}. */
+	private boolean fxAwaitingNewImage = true;
+	/** Flag indicating if {@link #displayCanvas()} has new contents in {@link #pendingBuffer}. Guarded by {@link #imageBufferLock}. */
+	private boolean imageBufferUpdated;
 
 	/**
 	 * Constructs a canvas that will draw the contents of the given drawable.
@@ -83,8 +89,12 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 		// we observe the canvas changing size, we only have to update the buffer limit rather
 		// than allocate a whole new buffer of the appropriate size. This saves loads of
 		// memory when the user is fiddling around resizing things a lot & rapidly.
-		byte[] bufferBacking = new byte[MAX_WIDTH * MAX_HEIGHT * COLOR_BYTES + COLOR_BYTES];
-		buffer = ByteBuffer.wrap(bufferBacking);
+		int bufferCapacity = MAX_WIDTH * MAX_HEIGHT * COLOR_BYTES + COLOR_BYTES;
+		buffers = new ByteBuffer[] {
+				ByteBuffer.wrap(new byte[bufferCapacity]),
+				ByteBuffer.wrap(new byte[bufferCapacity])
+		};
+		writeBuffer = buffers[0];
 
 		// Mark as managed so this doesn't prevent some containing SplitPane from shrinking.
 		canvas.setManaged(false);
@@ -154,10 +164,15 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 
 	@Override
 	public void display(GLAutoDrawable drawable) {
+		ByteBuffer frameBuffer;
+
 		// Don't update the image buffer if the FX thread isn't ready for the next draw.
-		if (!fxAwaitingNewImage)
-			return;
-		fxAwaitingNewImage = false;
+		synchronized (imageBufferLock) {
+			if (!fxAwaitingNewImage)
+				return;
+			fxAwaitingNewImage = false;
+			frameBuffer = writeBuffer;
+		}
 
 		// Don't update the image if we recently resized.
 		//
@@ -168,15 +183,20 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 			return;
 
 		// Read the pixel data from the GL context.
-		buffer.position(0);
+		frameBuffer.position(0);
 		int w = Math.max(1, Math.min(drawable.getSurfaceWidth(), imageWidth));
 		int h = Math.max(1, Math.min(drawable.getSurfaceHeight(), imageHeight));
-		drawable.getGL().glReadPixels(0, 0, w, h, GL.GL_BGRA, GL.GL_UNSIGNED_BYTE, buffer);
-		bufferImageWidth = w;
-		bufferImageHeight = h;
+		drawable.getGL().glReadPixels(0, 0, w, h, GL.GL_BGRA, GL.GL_UNSIGNED_BYTE, frameBuffer);
 
 		// Notify UI next frame our buffer is updated and ready to redraw new contents.
-		imageBufferUpdated = true;
+		synchronized (imageBufferLock) {
+			ByteBuffer firstBuffer = buffers[0];
+			pendingBuffer = frameBuffer;
+			pendingImageWidth = w;
+			pendingImageHeight = h;
+			imageBufferUpdated = true;
+			writeBuffer = frameBuffer == firstBuffer ? buffers[1] : firstBuffer;
+		}
 	}
 
 	@Override
@@ -186,7 +206,7 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 	}
 
 	/**
-	 * Updates our {@link #buffer} to fit the new GL viewport dimensions.
+	 * Updates our buffers to fit the new GL viewport dimensions.
 	 *
 	 * @param width
 	 * 		New viewport width.
@@ -196,27 +216,42 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 	private void refitBuffers(int width, int height) {
 		imageWidth = Math.max(1, width);
 		imageHeight = Math.max(1, height);
-		buffer.limit(Math.max(buffer.limit(), imageWidth * imageHeight * COLOR_BYTES + COLOR_BYTES));
+		int bufferLimit = imageWidth * imageHeight * COLOR_BYTES + COLOR_BYTES;
+		for (ByteBuffer buffer : buffers)
+			buffer.limit(Math.max(buffer.limit(), bufferLimit));
 	}
 
 	/**
 	 * Called every FX animation pulse via the {@link AnimationTimer} managed in the constructor.
 	 * <p/>
-	 * Every frame we check if we have new contents in our {@link #buffer} assigned in {@link #display(GLAutoDrawable)}.
+	 * Every frame we check if we have new contents assigned in {@link #display(GLAutoDrawable)}.
 	 * If we do, we'll draw the contents on the canvas.
 	 */
 	private void displayCanvas() {
+		ByteBuffer frameBuffer;
+		int frameWidth;
+		int frameHeight;
+
 		// Don't update the canvas if our image hasn't been updated since our last draw.
-		if (!imageBufferUpdated) {
-			fxAwaitingNewImage = true;
-			return;
+		synchronized (imageBufferLock) {
+			if (!imageBufferUpdated || pendingBuffer == null) {
+				fxAwaitingNewImage = true;
+				return;
+			}
+
+			frameBuffer = pendingBuffer;
+			frameWidth = pendingImageWidth;
+			frameHeight = pendingImageHeight;
+			pendingBuffer = null;
+			imageBufferUpdated = false;
 		}
-		imageBufferUpdated = false;
 
 		// Draw the GL frame buffer snapshot directly through the pixel painter.
-		canvas.drawFrame(buffer, bufferImageWidth, bufferImageHeight, ++imageFrameId);
+		canvas.drawFrame(frameBuffer, frameWidth, frameHeight, ++imageFrameId);
 		canvas.commit();
-		fxAwaitingNewImage = true;
+		synchronized (imageBufferLock) {
+			fxAwaitingNewImage = true;
+		}
 	}
 
 	/**
