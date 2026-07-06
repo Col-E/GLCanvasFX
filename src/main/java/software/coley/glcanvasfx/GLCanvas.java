@@ -31,16 +31,16 @@ public class GLCanvas extends BorderPane implements GLEventListener {
 
 	static {
 		int width = 1;
-		int heigth = 1;
+		int height = 1;
 		for (GraphicsDevice screenDevice : GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices()) {
 			DisplayMode display = screenDevice.getDisplayMode();
 			if (width < display.getWidth())
 				width = display.getWidth();
-			if (heigth < display.getHeight())
-				heigth = display.getHeight();
+			if (height < display.getHeight())
+				height = display.getHeight();
 		}
 		MAX_WIDTH = width;
-		MAX_HEIGHT = heigth;
+		MAX_HEIGHT = height;
 	}
 
 	/** We use {@link javafx.scene.image.PixelFormat#getByteBgraInstance()} for compatibility with {@link com.jogamp.opengl.GL#GL_BGRA}. */
