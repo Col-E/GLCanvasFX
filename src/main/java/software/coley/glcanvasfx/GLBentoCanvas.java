@@ -5,18 +5,18 @@ import com.jogamp.opengl.GL2;
 import com.jogamp.opengl.GLAutoDrawable;
 import com.jogamp.opengl.GLEventListener;
 import jakarta.annotation.Nonnull;
-import jakarta.annotation.Nullable;
 import javafx.animation.AnimationTimer;
+import javafx.scene.image.PixelFormat;
+import javafx.scene.image.PixelWriter;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.BorderPane;
 import software.coley.bentofx.control.canvas.ArgbSource;
 import software.coley.bentofx.control.canvas.PixelCanvas;
-import software.coley.bentofx.control.canvas.PixelPainterIntArgb;
+import software.coley.bentofx.control.canvas.PixelPainter;
 
 import java.awt.DisplayMode;
 import java.awt.GraphicsDevice;
 import java.awt.GraphicsEnvironment;
-import java.nio.Buffer;
 import java.nio.IntBuffer;
 
 /**
@@ -44,18 +44,24 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 		MAX_HEIGHT = heigth;
 	}
 
+	/** Painter used by {@link #canvas} to commit the GL frame buffer directly to {@link PixelWriter}. */
+	private final GLPixelPainter pixelPainter = new GLPixelPainter();
 	/** Canvas to draw to. */
-	private final AbsoluteSizedCanvas canvas = new AbsoluteSizedCanvas();
+	private final AbsoluteSizedCanvas canvas = new AbsoluteSizedCanvas(pixelPainter);
 	/** Timer to animate canvas draws on. */
 	private final AnimationTimer canvasAnimation;
-	/** Intermediate buffer to communicate between our {@link #argbSource ARGB lookup} and the {@link GLAutoDrawable#getGL() GL} frame buffer. */
+	/** Intermediate buffer to communicate between the {@link GLAutoDrawable#getGL() GL} frame buffer and {@link PixelWriter}. */
 	private final IntBuffer buffer;
-	/** The wrapper around our {@link #buffer} for image-like ARGB lookups. Holds a snapshot of the {@link GLAutoDrawable#getGL() GL} frame buffer. */
-	private ArgbSource argbSource;
-	/** Current width of {@link #argbSource display}. */
+	/** Width of the last image read into {@link #buffer}. */
+	private int bufferImageWidth;
+	/** Height of the last image read into {@link #buffer}. */
+	private int bufferImageHeight;
+	/** Current width of the GL display. */
 	private int imageWidth;
-	/** Current height of {@link #argbSource display}. */
+	/** Current height of the GL display. */
 	private int imageHeight;
+	/** Incremented for each image committed to the canvas, used to bypass {@link PixelCanvas} draw de-duplication. */
+	private long imageFrameId;
 	/** Last millis timestamp of a resize event observed. Used to prevent visual tearing when updating the {@link #canvas} display. */
 	private long lastResizeTimeMs;
 	/** Flag indicating if {@link #display(GLAutoDrawable)} needs to update {@link #buffer}. Updated every FX render tick. */
@@ -147,10 +153,6 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 
 	@Override
 	public void display(GLAutoDrawable drawable) {
-		// Don't update the image buffer if our image isn't initialized yet.
-		if (argbSource == null)
-			return;
-
 		// Don't update the image buffer if the FX thread isn't ready for the next draw.
 		if (!fxAwaitingNewImage)
 			return;
@@ -171,6 +173,8 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 		int w = Math.max(1, Math.min(drawable.getSurfaceWidth(), imageWidth));
 		int h = Math.max(1, Math.min(drawable.getSurfaceHeight(), imageHeight));
 		drawable.getGL().glReadPixels(0, 0, w, h, GL.GL_BGRA, GL2.GL_UNSIGNED_BYTE, buffer);
+		bufferImageWidth = w;
+		bufferImageHeight = h;
 
 		// Notify UI next frame our buffer is updated and ready to redraw new contents.
 		imageBufferUpdated = true;
@@ -183,7 +187,7 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 	}
 
 	/**
-	 * Updates our {@link #argbSource} and {@link #buffer} to fit the new GL viewport dimensions.
+	 * Updates our {@link #buffer} to fit the new GL viewport dimensions.
 	 *
 	 * @param width
 	 * 		New viewport width.
@@ -194,119 +198,134 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 		imageWidth = Math.max(1, width);
 		imageHeight = Math.max(1, height);
 		buffer.limit(Math.max(buffer.limit(), imageWidth * imageHeight + 1));
-		argbSource = new GLArgbSource(buffer, imageWidth, imageHeight);
 	}
 
 	/**
 	 * Called every FX animation pulse via the {@link AnimationTimer} managed in the constructor.
 	 * <p/>
-	 * Every frame we check if we have new contents in our {@link #argbSource} assigned in {@link #display(GLAutoDrawable)}.
+	 * Every frame we check if we have new contents in our {@link #buffer} assigned in {@link #display(GLAutoDrawable)}.
 	 * If we do, we'll draw the contents on the canvas.
 	 */
 	private void displayCanvas() {
-		fxAwaitingNewImage = true;
-
 		// Don't update the canvas if our image hasn't been updated since our last draw.
-		if (!imageBufferUpdated)
+		if (!imageBufferUpdated) {
+			fxAwaitingNewImage = true;
 			return;
+		}
 		imageBufferUpdated = false;
 
-		// Draw the image.
-		//
-		// We don't clear the canvas to mitigate the built-in de-duplication of draw dispatches.
-		// This gives us a marginal performance gain.
-		canvas.drawImage(0, 0, argbSource);
+		// Draw the GL frame buffer snapshot directly through the pixel painter.
+		canvas.drawFrame(buffer, bufferImageWidth, bufferImageHeight, ++imageFrameId);
 		canvas.commit();
+		fxAwaitingNewImage = true;
 	}
 
 	/**
 	 * Extended pixel canvas to allow absolute sizing via {@link AbsoluteSizedCanvas#size(double, double)}.
 	 */
 	private static class AbsoluteSizedCanvas extends PixelCanvas {
-		public AbsoluteSizedCanvas() {
-			super(new PixelPainterIntArgb());
+		private final GLPixelPainter pixelPainter;
+
+		public AbsoluteSizedCanvas(@Nonnull GLPixelPainter pixelPainter) {
+			super(pixelPainter);
+			this.pixelPainter = pixelPainter;
 		}
 
 		protected void size(double w, double h) {
 			setWidth(w);
 			setHeight(h);
 		}
+
+		protected void drawFrame(@Nonnull IntBuffer frameBuffer, int frameWidth, int frameHeight, long frameId) {
+			pixelPainter.setFrame(frameBuffer, frameWidth, frameHeight);
+			updateDrawHash(Long.hashCode(frameId));
+		}
 	}
 
 	/**
-	 * Our implementation of an {@link ArgbSource} for reading content out of the canvas {@link #buffer}.
-	 * <br>
-	 * This accommodates for the {@link GL#glReadPixels(int, int, int, int, int, int, Buffer)} giving us an Y-axis flipped image.
-	 * <br>
-	 * There is some weirdness where we read {@link #buffer} content as {@code ARGB} but the {@code glReadPixels} call is
-	 * passed {@code BGRA} as the buffer content {@code type} instead as a series of {@link GL#GL_UNSIGNED_BYTE}.
-	 * The setup we have here shouldn't be mapping the color bytes properly when I try and wrap my head around it,
-	 * but it renders correctly somehow.
+	 * Pixel painter that commits the GL read buffer directly to {@link PixelWriter}, flipping the Y-axis during commit.
 	 */
-	private static class GLArgbSource implements ArgbSource {
-		private final IntBuffer buffer;
-		private final int width;
-		private final int height;
-		private final int bufferCapacity;
+	private static class GLPixelPainter implements PixelPainter<IntBuffer> {
+		private static final IntBuffer EMPTY_BUFFER = IntBuffer.wrap(new int[0]);
+		private IntBuffer frameBuffer = EMPTY_BUFFER;
+		private int frameWidth;
+		private int frameHeight;
+		private int imageWidth;
+		private int imageHeight;
 
-		private GLArgbSource(@Nonnull IntBuffer buffer, int width, int height) {
-			this.buffer = buffer;
-			this.width = width;
-			this.height = height;
-
-			bufferCapacity = width * height;
+		@Override
+		public boolean initialize(int width, int height) {
+			boolean changed = imageWidth != width || imageHeight != height;
+			imageWidth = width;
+			imageHeight = height;
+			return changed;
 		}
 
 		@Override
-		public int getWidth() {
-			return width;
+		public void release() {
+			frameBuffer = EMPTY_BUFFER;
+			frameWidth = 0;
+			frameHeight = 0;
+			imageWidth = 0;
+			imageHeight = 0;
 		}
 
 		@Override
-		public int getHeight() {
-			return height;
-		}
+		public void commit(@Nonnull PixelWriter pixelWriter) {
+			int width = Math.min(imageWidth, frameWidth);
+			int height = Math.min(imageHeight, frameHeight);
+			if (width <= 0 || height <= 0)
+				return;
 
-		@Override
-		public int getArgb(int x, int y) {
-			int i = ((height - 1 - y) * width + x);
-			if (i >= 0 && i < bufferCapacity) {
-				return buffer.get(i);
+			for (int y = 0; y < height; y++) {
+				int bufferRowOffset = (frameHeight - 1 - y) * frameWidth;
+				IntBuffer rowBuffer = frameBuffer.duplicate();
+				rowBuffer.position(bufferRowOffset);
+				pixelWriter.setPixels(0, y, width, 1, getPixelFormat(), rowBuffer, frameWidth);
 			}
-			return 0;
-		}
-
-		@Nullable
-		@Override
-		public int[] getArgb(int x, int y, int width, int height) {
-			int yStart = Math.max(0, y);
-			int xStart = Math.max(0, x);
-			int yBound = Math.min(y + height, getHeight());
-			int xBound = Math.min(x + width, getWidth());
-			IntBuffer buffer = this.buffer;
-			int bufferCapacity = this.bufferCapacity;
-			int outCapacity = width * height;
-			int[] out = new int[outCapacity];
-			for (int ly = yStart; ly < yBound; ++ly) {
-				int yBufferOffset = (getHeight() - 1 - ly) * getWidth();
-				int yOutOffset = (ly - y) * width;
-
-				for (int lx = xStart; lx < xBound; ++lx) {
-					int outIndex = (yOutOffset + (lx - x));
-					int bufferIndex = (yBufferOffset + lx);
-					if (bufferIndex < bufferCapacity && outIndex < outCapacity) {
-						int rgb = buffer.get(bufferIndex);
-						out[outIndex] = rgb;
-					}
-				}
-			}
-
-			return out;
 		}
 
 		@Override
-		public int hashCode() {
-			return 0;
+		public void fillRect(int x, int y, int width, int height, int color) {
+			// no-op
+		}
+
+		@Override
+		public void drawImage(int x, int y, @Nonnull ArgbSource image) {
+			// no-op
+		}
+
+		@Override
+		public void drawImage(int x, int y, int sx, int sy, int sw, int sh, @Nonnull ArgbSource image) {
+			// no-op
+		}
+
+		@Override
+		public void setColor(int x, int y, int color) {
+			// no-op
+		}
+
+		@Override
+		public void clear() {
+			// no-op
+		}
+
+		@Nonnull
+		@Override
+		public IntBuffer getBuffer() {
+			return frameBuffer;
+		}
+
+		@Nonnull
+		@Override
+		public PixelFormat<IntBuffer> getPixelFormat() {
+			return PixelFormat.getIntArgbInstance();
+		}
+
+		private void setFrame(@Nonnull IntBuffer frameBuffer, int frameWidth, int frameHeight) {
+			this.frameBuffer = frameBuffer;
+			this.frameWidth = Math.max(1, frameWidth);
+			this.frameHeight = Math.max(1, frameHeight);
 		}
 	}
 }
