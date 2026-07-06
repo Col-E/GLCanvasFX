@@ -130,7 +130,7 @@ public class GLCanvas extends BorderPane implements GLEventListener {
 		final double x = snappedLeftInset();
 		final double y = snappedTopInset();
 		final double w = snapSizeX(getWidth()) - x - snappedRightInset();
-		final double h = snapSpaceX(getHeight()) - y - snappedBottomInset();
+		final double h = snapSizeY(getHeight()) - y - snappedBottomInset();
 
 		// Ensure the canvas is always mapped to the space of our control.
 		canvas.setLayoutX(x);
