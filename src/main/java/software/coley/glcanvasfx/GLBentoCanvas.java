@@ -1,7 +1,6 @@
 package software.coley.glcanvasfx;
 
 import com.jogamp.opengl.GL;
-import com.jogamp.opengl.GL2;
 import com.jogamp.opengl.GLAutoDrawable;
 import com.jogamp.opengl.GLEventListener;
 import jakarta.annotation.Nonnull;
@@ -17,7 +16,7 @@ import software.coley.bentofx.control.canvas.PixelPainter;
 import java.awt.DisplayMode;
 import java.awt.GraphicsDevice;
 import java.awt.GraphicsEnvironment;
-import java.nio.IntBuffer;
+import java.nio.ByteBuffer;
 
 /**
  * A {@link PixelCanvas} wrapper that draws {@link GLAutoDrawable} contents.
@@ -29,6 +28,8 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 	private static final int MAX_WIDTH;
 	/** Max height of any monitor in the current {@link GraphicsEnvironment} */
 	private static final int MAX_HEIGHT;
+	/** Bytes used for each BGRA pixel. */
+	private static final int COLOR_BYTES = 4;
 
 	static {
 		int width = 1;
@@ -51,7 +52,7 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 	/** Timer to animate canvas draws on. */
 	private final AnimationTimer canvasAnimation;
 	/** Intermediate buffer to communicate between the {@link GLAutoDrawable#getGL() GL} frame buffer and {@link PixelWriter}. */
-	private final IntBuffer buffer;
+	private final ByteBuffer buffer;
 	/** Width of the last image read into {@link #buffer}. */
 	private int bufferImageWidth;
 	/** Height of the last image read into {@link #buffer}. */
@@ -76,14 +77,14 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 	 * 		Drawable to pull graphics from.
 	 */
 	public GLBentoCanvas(@Nonnull GLAutoDrawable drawable) {
-		// Buffer to hold MAX_WIDTH*MAX_HEIGHT pixels of ARGB data.
+		// Buffer to hold MAX_WIDTH*MAX_HEIGHT pixels of BGRA data.
 		//
 		// We allocate a single array to the maximum possible size of the screen so that when
 		// we observe the canvas changing size, we only have to update the buffer limit rather
 		// than allocate a whole new buffer of the appropriate size. This saves loads of
 		// memory when the user is fiddling around resizing things a lot & rapidly.
-		int[] bufferBacking = new int[MAX_WIDTH * MAX_HEIGHT + 1];
-		buffer = IntBuffer.wrap(bufferBacking);
+		byte[] bufferBacking = new byte[MAX_WIDTH * MAX_HEIGHT * COLOR_BYTES + COLOR_BYTES];
+		buffer = ByteBuffer.wrap(bufferBacking);
 
 		// Mark as managed so this doesn't prevent some containing SplitPane from shrinking.
 		canvas.setManaged(false);
@@ -167,12 +168,10 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 			return;
 
 		// Read the pixel data from the GL context.
-		// - I know, it says BGRA and earlier we said ARGB.
-		//   It works and the colors are still correct (See test class for examples/proof).
 		buffer.position(0);
 		int w = Math.max(1, Math.min(drawable.getSurfaceWidth(), imageWidth));
 		int h = Math.max(1, Math.min(drawable.getSurfaceHeight(), imageHeight));
-		drawable.getGL().glReadPixels(0, 0, w, h, GL.GL_BGRA, GL2.GL_UNSIGNED_BYTE, buffer);
+		drawable.getGL().glReadPixels(0, 0, w, h, GL.GL_BGRA, GL.GL_UNSIGNED_BYTE, buffer);
 		bufferImageWidth = w;
 		bufferImageHeight = h;
 
@@ -197,7 +196,7 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 	private void refitBuffers(int width, int height) {
 		imageWidth = Math.max(1, width);
 		imageHeight = Math.max(1, height);
-		buffer.limit(Math.max(buffer.limit(), imageWidth * imageHeight + 1));
+		buffer.limit(Math.max(buffer.limit(), imageWidth * imageHeight * COLOR_BYTES + COLOR_BYTES));
 	}
 
 	/**
@@ -236,7 +235,7 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 			setHeight(h);
 		}
 
-		protected void drawFrame(@Nonnull IntBuffer frameBuffer, int frameWidth, int frameHeight, long frameId) {
+		protected void drawFrame(@Nonnull ByteBuffer frameBuffer, int frameWidth, int frameHeight, long frameId) {
 			pixelPainter.setFrame(frameBuffer, frameWidth, frameHeight);
 			updateDrawHash(Long.hashCode(frameId));
 		}
@@ -245,9 +244,9 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 	/**
 	 * Pixel painter that commits the GL read buffer directly to {@link PixelWriter}, flipping the Y-axis during commit.
 	 */
-	private static class GLPixelPainter implements PixelPainter<IntBuffer> {
-		private static final IntBuffer EMPTY_BUFFER = IntBuffer.wrap(new int[0]);
-		private IntBuffer frameBuffer = EMPTY_BUFFER;
+	private static class GLPixelPainter implements PixelPainter<ByteBuffer> {
+		private static final ByteBuffer EMPTY_BUFFER = ByteBuffer.wrap(new byte[0]);
+		private ByteBuffer frameBuffer = EMPTY_BUFFER;
 		private int frameWidth;
 		private int frameHeight;
 		private int imageWidth;
@@ -278,10 +277,10 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 				return;
 
 			for (int y = 0; y < height; y++) {
-				int bufferRowOffset = (frameHeight - 1 - y) * frameWidth;
-				IntBuffer rowBuffer = frameBuffer.duplicate();
+				int bufferRowOffset = (frameHeight - 1 - y) * frameWidth * COLOR_BYTES;
+				ByteBuffer rowBuffer = frameBuffer.duplicate();
 				rowBuffer.position(bufferRowOffset);
-				pixelWriter.setPixels(0, y, width, 1, getPixelFormat(), rowBuffer, frameWidth);
+				pixelWriter.setPixels(0, y, width, 1, getPixelFormat(), rowBuffer, frameWidth * COLOR_BYTES);
 			}
 		}
 
@@ -312,17 +311,17 @@ public class GLBentoCanvas extends BorderPane implements GLEventListener {
 
 		@Nonnull
 		@Override
-		public IntBuffer getBuffer() {
+		public ByteBuffer getBuffer() {
 			return frameBuffer;
 		}
 
 		@Nonnull
 		@Override
-		public PixelFormat<IntBuffer> getPixelFormat() {
-			return PixelFormat.getIntArgbInstance();
+		public PixelFormat<ByteBuffer> getPixelFormat() {
+			return PixelFormat.getByteBgraInstance();
 		}
 
-		private void setFrame(@Nonnull IntBuffer frameBuffer, int frameWidth, int frameHeight) {
+		private void setFrame(@Nonnull ByteBuffer frameBuffer, int frameWidth, int frameHeight) {
 			this.frameBuffer = frameBuffer;
 			this.frameWidth = Math.max(1, frameWidth);
 			this.frameHeight = Math.max(1, frameHeight);
